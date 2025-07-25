@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sign Language Detection</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            background: #f4f6fb;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 420px;
+            margin: 40px auto;
+            background: #fff;
+            border-radius: 14px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            padding: 32px 24px 24px 24px;
+            text-align: center;
+        }
+        h1 {
+            color: #2d3a4b;
+            margin-bottom: 18px;
+        }
+        #video, #overlay {
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            margin-bottom: 16px;
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+        .video-container {
+            position: relative;
+            display: inline-block;
+        }
+        #result {
+            margin-top: 18px;
+            font-size: 1.2em;
+            color: #1a7f37;
+            min-height: 32px;
+        }
+        button {
+            background: #1a7f37;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 12px 28px;
+            font-size: 1em;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #155c27;
+        }
+        @media (max-width: 500px) {
+            .container { padding: 16px 4px; }
+            #video, #overlay { width: 100%; }
+        }
+    </style>
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Sign Language Detection</h1>
+        <div class="video-container" style="width:320px; height:240px;">
+            <video id="video" width="320" height="240" autoplay playsinline></video>
+            <canvas id="overlay" width="320" height="240" style="position:absolute; left:0; top:0;"></canvas>
+        </div>
+        <br>
+        <button id="captureBtn">Capture & Detect</button>
+        <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+        <div id="result"></div>
+    </div>
+    <script>
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const canvas = document.getElementById('canvas');
+        const resultDiv = document.getElementById('result');
+        const captureBtn = document.getElementById('captureBtn');
+        const overlayCtx = overlay.getContext('2d');
+
+        // Start webcam stream
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => { video.srcObject = stream; })
+            .catch(err => {
+                resultDiv.textContent = "Could not access webcam: " + err;
+                captureBtn.disabled = true;
+            });
+
+        // MediaPipe Hands setup
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults(results => {
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    // Draw glowing, shiny blue connectors
+                    overlayCtx.save();
+                    overlayCtx.shadowColor = "#3ec6ff";
+                    overlayCtx.shadowBlur = 18;
+                    drawConnectors(overlayCtx, landmarks, HAND_CONNECTIONS, {
+                        color: "#3ec6ff",
+                        lineWidth: 3
+                    });
+                    overlayCtx.restore();
+
+                    // Draw diamond-shaped, glowing, gradient landmarks
+                    for (const lm of landmarks) {
+                        const x = lm.x * overlay.width;
+                        const y = lm.y * overlay.height;
+                        const size = 5;
+
+                        // Create a radial gradient for the diamond
+                        const grad = overlayCtx.createRadialGradient(x, y, 2, x, y, size);
+                        grad.addColorStop(0, "#fff");
+                        grad.addColorStop(0.5, "#3ec6ff");
+                        grad.addColorStop(1, "#0a2342");
+
+                        overlayCtx.save();
+                        overlayCtx.beginPath();
+                        // Diamond shape
+                        overlayCtx.moveTo(x, y - size);
+                        overlayCtx.lineTo(x + size, y);
+                        overlayCtx.lineTo(x, y + size);
+                        overlayCtx.lineTo(x - size, y);
+                        overlayCtx.closePath();
+                        overlayCtx.fillStyle = grad;
+                        overlayCtx.shadowColor = "#3ec6ff";
+                        overlayCtx.shadowBlur = 14;
+                        overlayCtx.globalAlpha = 0.95;
+                        overlayCtx.fill();
+                        overlayCtx.restore();
+                    }
+                }
+            }
+        });
+
+        // Use MediaPipe camera utils to send frames to hands
+        let mpCamera;
+        video.onloadedmetadata = () => {
+            mpCamera = new Camera(video, {
+                onFrame: async () => {
+                    await hands.send({image: video});
+                },
+                width: 320,
+                height: 240
+            });
+            mpCamera.start();
+        };
+
+        // Capture frame and send to Flask
+        captureBtn.onclick = function() {
+            // Draw current frame to canvas
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => {
+                const formData = new FormData();
+                formData.append('image', blob, 'frame.png');
+                resultDiv.textContent = "Detecting...";
+                fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.sign) {
+                        resultDiv.textContent = "Detected Sign: " + data.sign;
+                        // Optional: Speak result using browser TTS
+                        if ('speechSynthesis' in window) {
+                            const utter = new SpeechSynthesisUtterance(data.sign);
+                            window.speechSynthesis.speak(utter);
+                        }
+                    } else {
+                        resultDiv.textContent = "No sign detected.";
+                    }
+                })
+                .catch(err => {
+                    resultDiv.textContent = "Error: " + err;
+                });
+            }, 'image/png');
+        };
+    </script>
+</body>
+</html>
